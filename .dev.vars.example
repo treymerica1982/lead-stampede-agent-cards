@@ -1,0 +1,6 @@
+# Copy this file to .dev.vars (not committed) and fill in the anon key
+# for local development with `wrangler dev`.
+#
+# Get the anon key from: Supabase dashboard → Project Settings → API → anon/public
+
+SUPABASE_ANON_KEY=your-supabase-anon-key-here

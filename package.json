@@ -1,0 +1,19 @@
+{
+  "name": "lead-stampede-agent-cards",
+  "version": "0.1.0",
+  "description": "Cloudflare Worker that serves A2A-compliant Agent Cards for Lead Stampede clients",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:prod": "wrangler deploy --env production",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

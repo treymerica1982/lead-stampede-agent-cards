@@ -1,0 +1,29 @@
+name = "lead-stampede-cards"
+main = "src/worker.js"
+compatibility_date = "2024-10-01"
+
+# Non-secret public config — checked into git
+[vars]
+SUPABASE_URL = "https://gcyglsdzpcobjvtvddve.supabase.co"
+
+# Local-dev MCP URL — override in production via:
+#   wrangler secret put MCP_BASE_URL
+# or add [env.production] block below
+MCP_BASE_URL = "https://lead-stampede-mcp-server-production.up.railway.app"
+
+# Secrets set via CLI (never committed):
+#   wrangler secret put SUPABASE_ANON_KEY
+#
+# The anon key is safe to expose to clients, but we keep it as a secret
+# so it can be rotated without redeploying code.
+
+# -------------------------------------------------------------------
+# Production environment — uncomment and customize once you have
+# a Railway URL for the MCP server and (optionally) a custom domain.
+# -------------------------------------------------------------------
+# [env.production]
+# vars = { MCP_BASE_URL = "https://mcp.leadstampede.io" }
+#
+# [[env.production.routes]]
+# pattern = "agentcards.leadstampede.io/*"
+# zone_name = "leadstampede.io"
