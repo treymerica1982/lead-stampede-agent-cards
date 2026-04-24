@@ -13,7 +13,7 @@
  *   - "ecommerce" → profile, product search, collections, availability, reviews
  */
 
-const CARD_VERSION = '1.2.0';
+const CARD_VERSION = '1.2.1';
 
 export default {
   async fetch(request, env, ctx) {
