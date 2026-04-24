@@ -2,18 +2,21 @@
  * Lead Stampede — Agent Card Worker
  *
  * Serves A2A-compliant Agent Cards at:
- *   GET /{slug}                              (convenience path)
- *   GET /{slug}/.well-known/agent-card.json  (spec-recommended path)
+ *   GET /{slug}                              (JSON — convenience path)
+ *   GET /{slug}/.well-known/agent-card.json  (JSON — spec-recommended)
+ *   GET /{slug}/view                         (HTML — human-readable viewer page)
  *
- * Each card describes one client's capabilities and points AI agents
- * at the MCP server where those capabilities are actually executed.
+ * The JSON card is for AI agents. The /view route is a human-readable
+ * page you can share with prospects and clients.
  *
- * The card's contents automatically adapt to the client's business_type:
+ * The card's contents auto-adapt to the client's business_type:
  *   - "service"   → profile, services, availability, reviews
  *   - "ecommerce" → profile, product search, collections, availability, reviews
+ *
+ * demo_only=true clients are invisible on all public routes.
  */
 
-const CARD_VERSION = '1.2.1';
+const CARD_VERSION = '1.3.0';
 
 export default {
   async fetch(request, env, ctx) {
@@ -33,7 +36,7 @@ export default {
     if (url.pathname === '/' || url.pathname === '') {
       return json({
         service: 'Lead Stampede Agent Card Directory',
-        usage: 'GET /{client-slug} to retrieve an Agent Card',
+        usage: 'GET /{client-slug} for JSON, /{client-slug}/view for the human page',
         documentation: 'https://leadstampede.io',
       });
     }
@@ -42,16 +45,45 @@ export default {
       return json({ status: 'ok', timestamp: new Date().toISOString() });
     }
 
-    const slug = extractSlug(url.pathname);
-    if (!slug) {
-      return json({ error: 'invalid_path', message: 'Expected /{client-slug}' }, 400);
+    const parsed = parsePath(url.pathname);
+    if (!parsed) {
+      return json({ error: 'invalid_path', message: 'Expected /{client-slug} or /{client-slug}/view' }, 400);
     }
+    const { slug, route } = parsed;
 
     const client = await fetchClient(slug, env);
     if (!client) {
+      if (route === 'view') {
+        return htmlResponse(renderNotFoundPage(slug), 404);
+      }
       return json({ error: 'client_not_found', slug }, 404);
     }
 
+    // Branch on route type
+    if (route === 'view') {
+      // Fetch featured products for e-commerce clients so the page can render them
+      const featuredProducts = client.business_type === 'ecommerce'
+        ? await fetchFeaturedProducts(client.id, env)
+        : [];
+
+      const html = renderViewerPage(client, featuredProducts, env);
+
+      ctx.waitUntil(
+        logCardView({
+          clientId: client.id,
+          requestingAgent: request.headers.get('User-Agent'),
+          sourceIp: request.headers.get('CF-Connecting-IP'),
+          responseMs: Date.now() - startedAt,
+          env,
+        })
+      );
+
+      return htmlResponse(html, 200, {
+        'Cache-Control': 'public, max-age=300',
+      });
+    }
+
+    // Default route = JSON Agent Card
     const card = buildAgentCard(client, env);
 
     ctx.waitUntil(
@@ -65,29 +97,36 @@ export default {
     );
 
     return json(card, 200, {
-      'Cache-Control': 'public, max-age=300', // 5-minute cache
+      'Cache-Control': 'public, max-age=300',
     });
   },
 };
 
 // ---------------------------------------------------------------------
-// Path parsing — strips optional /.well-known/agent-card.json suffix
+// Path parsing — identifies which route was requested
+// Supports:
+//   /{slug}                          → { slug, route: 'card' }
+//   /{slug}/.well-known/agent-card.json → { slug, route: 'card' }
+//   /{slug}/view                     → { slug, route: 'view' }
 // ---------------------------------------------------------------------
-function extractSlug(pathname) {
+function parsePath(pathname) {
   const parts = pathname.split('/').filter(Boolean);
   if (parts.length === 0) return null;
-  if (parts.length === 1) return parts[0];
+
+  if (parts.length === 1) {
+    return { slug: parts[0], route: 'card' };
+  }
+  if (parts.length === 2 && parts[1] === 'view') {
+    return { slug: parts[0], route: 'view' };
+  }
   if (parts.length === 3 && parts[1] === '.well-known' && parts[2] === 'agent-card.json') {
-    return parts[0];
+    return { slug: parts[0], route: 'card' };
   }
   return null;
 }
 
 // ---------------------------------------------------------------------
-// Supabase — public read via anon key.
-// Filters: active=true AND demo_only=false.
-// Demo clients (demo_only=true) are invisible to the public web;
-// they're only reachable via the MCP server with the demo agency API key.
+// Supabase — public reads filtered to active=true AND demo_only=false.
 // ---------------------------------------------------------------------
 async function fetchClient(slug, env) {
   const res = await fetch(
@@ -102,12 +141,32 @@ async function fetchClient(slug, env) {
   );
 
   if (!res.ok) {
-    console.error(`[supabase] ${res.status} ${await res.text()}`);
+    console.error(`[supabase] clients ${res.status} ${await res.text()}`);
     return null;
   }
 
   const rows = await res.json();
   return rows[0] || null;
+}
+
+async function fetchFeaturedProducts(clientId, env) {
+  const res = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/products?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&featured=eq.true&select=*&order=price_cents.desc`,
+    {
+      headers: {
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!res.ok) {
+    console.error(`[supabase] products ${res.status} ${await res.text()}`);
+    return [];
+  }
+
+  return await res.json();
 }
 
 async function logCardView({ clientId, requestingAgent, sourceIp, responseMs, env }) {
@@ -133,8 +192,7 @@ async function logCardView({ clientId, requestingAgent, sourceIp, responseMs, en
 }
 
 // ---------------------------------------------------------------------
-// Agent Card builder — routes on business_type
-// Spec: https://a2a-protocol.org/latest/specification/
+// JSON Agent Card builder — routes on business_type
 // ---------------------------------------------------------------------
 function buildAgentCard(client, env) {
   const mcpBase = env.MCP_BASE_URL || 'http://localhost:3000';
@@ -185,10 +243,6 @@ function buildAgentCard(client, env) {
     },
   };
 }
-
-// ---------------------------------------------------------------------
-// Skill builders per business type
-// ---------------------------------------------------------------------
 
 function buildServiceSkills(client) {
   const hasServices = Array.isArray(client.services) && client.services.length > 0;
@@ -344,6 +398,420 @@ function describeServiceArea(area) {
 }
 
 // ---------------------------------------------------------------------
+// HTML renderer — human-readable viewer page
+// ---------------------------------------------------------------------
+function renderViewerPage(client, featuredProducts, env) {
+  const businessType = client.business_type || 'service';
+  return businessType === 'ecommerce'
+    ? renderEcommercePage(client, featuredProducts)
+    : renderServicePage(client);
+}
+
+const SHARED_CSS = `
+  :root {
+    --bg: #0a0a0a;
+    --bg-elevated: #141414;
+    --bg-elevated-2: #1a1a1a;
+    --border: #2a2a2a;
+    --text: #f5f5f5;
+    --text-muted: #9a9a9a;
+    --text-dim: #6a6a6a;
+    --accent: #d4af37;
+    --accent-hover: #e4bf47;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-hover); text-decoration: underline; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 48px 24px 64px; }
+  .hero {
+    padding-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 40px;
+  }
+  .hero h1 {
+    font-size: 44px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    margin-bottom: 12px;
+  }
+  .hero .tagline {
+    font-size: 20px;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-bottom: 20px;
+  }
+  .hero .description {
+    font-size: 17px;
+    color: var(--text-muted);
+    max-width: 720px;
+    line-height: 1.65;
+  }
+  .section { margin-bottom: 48px; }
+  .section h2 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+  }
+  .footer {
+    margin-top: 80px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    color: var(--text-dim);
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .footer a { color: var(--text-muted); }
+  .ai-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .ai-badge::before {
+    content: "";
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #4ade80;
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 32px 20px 48px; }
+    .hero h1 { font-size: 32px; }
+    .hero .tagline { font-size: 17px; }
+    .hero .description { font-size: 15px; }
+  }
+`;
+
+function htmlShell(title, bodyContent, extraCss = '') {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<meta name="robots" content="noindex">
+<style>${SHARED_CSS}${extraCss}</style>
+</head>
+<body>
+<div class="wrap">
+${bodyContent}
+</div>
+</body>
+</html>`;
+}
+
+function renderFooter(client) {
+  return `
+  <div class="footer">
+    <span class="ai-badge">AI-readable profile · <a href="/${escapeHtml(client.slug)}">view raw Agent Card →</a></span>
+    <span>Powered by <a href="https://leadstampede.io">Lead Stampede</a></span>
+  </div>`;
+}
+
+// --- Service business page -------------------------------------------
+
+function renderServicePage(client) {
+  const services = Array.isArray(client.services) ? client.services : [];
+  const serviceAreaText = describeServiceArea(client.service_area);
+
+  const serviceCards = services.length > 0
+    ? `<div class="services-grid">
+${services.map(s => `  <div class="service-card">${escapeHtml(typeof s === 'string' ? s : (s.name || ''))}</div>`).join('\n')}
+</div>`
+    : `<p class="muted-text">Contact us to learn about available services.</p>`;
+
+  const hoursRows = renderHoursTable(client.hours);
+  const contactButtons = renderContactButtons(client);
+
+  const extraCss = `
+    .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+    .service-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+      font-size: 15px;
+      font-weight: 500;
+    }
+    .info-grid { display: grid; grid-template-columns: 1fr; gap: 32px; }
+    @media (min-width: 720px) { .info-grid { grid-template-columns: 1fr 1fr; } }
+    .info-block { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+    .info-block p { color: var(--text-muted); font-size: 15px; }
+    .hours-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .hours-table td { padding: 6px 0; border-bottom: 1px solid var(--border); }
+    .hours-table td:first-child { color: var(--text-muted); text-transform: capitalize; }
+    .hours-table td:last-child { text-align: right; }
+    .hours-table tr:last-child td { border-bottom: none; }
+    .contact-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+    .contact-btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 16px;
+      background: var(--bg-elevated-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 500;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .contact-btn:hover { border-color: var(--accent); background: #202020; color: var(--text); text-decoration: none; }
+    .contact-btn.primary { background: var(--accent); color: #0a0a0a; border-color: var(--accent); }
+    .contact-btn.primary:hover { background: var(--accent-hover); }
+    .muted-text { color: var(--text-muted); font-size: 15px; }
+    .pricing-summary { color: var(--text-muted); font-size: 15px; margin-top: 16px; line-height: 1.6; }
+  `;
+
+  const body = `
+  <header class="hero">
+    <h1>${escapeHtml(client.business_name)}</h1>
+    ${client.tagline ? `<p class="tagline">${escapeHtml(client.tagline)}</p>` : ''}
+    ${client.description ? `<p class="description">${escapeHtml(client.description)}</p>` : ''}
+  </header>
+
+  <section class="section">
+    <h2>Services</h2>
+    ${serviceCards}
+    ${client.pricing_summary ? `<p class="pricing-summary">${escapeHtml(client.pricing_summary)}</p>` : ''}
+  </section>
+
+  <section class="section">
+    <div class="info-grid">
+      <div class="info-block">
+        <h2>Service Area</h2>
+        <p>${escapeHtml(serviceAreaText || 'Contact for service area details.')}</p>
+      </div>
+      <div class="info-block">
+        <h2>Hours</h2>
+        ${hoursRows}
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Get in Touch</h2>
+    <div class="contact-row">
+      ${contactButtons}
+    </div>
+  </section>
+
+  ${renderFooter(client)}
+`;
+
+  return htmlShell(client.business_name, body, extraCss);
+}
+
+function renderHoursTable(hours) {
+  if (!hours || typeof hours !== 'object') {
+    return `<p class="muted-text">Contact for hours.</p>`;
+  }
+  const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const dayLabels = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
+  const rows = days
+    .filter(d => hours[d])
+    .map(d => `<tr><td>${dayLabels[d]}</td><td>${escapeHtml(hours[d])}</td></tr>`)
+    .join('');
+  if (!rows) return `<p class="muted-text">Contact for hours.</p>`;
+  const noteRow = hours.note ? `<tr><td colspan="2" style="color: var(--text-dim); padding-top: 12px;">${escapeHtml(hours.note)}</td></tr>` : '';
+  return `<table class="hours-table">${rows}${noteRow}</table>`;
+}
+
+function renderContactButtons(client) {
+  const buttons = [];
+  if (client.booking_url) {
+    buttons.push(`<a class="contact-btn primary" href="${escapeAttr(client.booking_url)}">Book Online</a>`);
+  }
+  if (client.phone) {
+    buttons.push(`<a class="contact-btn" href="tel:${escapeAttr(client.phone.replace(/[^\d+]/g, ''))}">Call ${escapeHtml(client.phone)}</a>`);
+  }
+  if (client.email) {
+    buttons.push(`<a class="contact-btn" href="mailto:${escapeAttr(client.email)}">Email</a>`);
+  }
+  if (client.website) {
+    buttons.push(`<a class="contact-btn" href="${escapeAttr(client.website)}" target="_blank" rel="noopener">Visit Website</a>`);
+  }
+  if (client.shop_url && client.shop_url !== client.website) {
+    buttons.push(`<a class="contact-btn" href="${escapeAttr(client.shop_url)}" target="_blank" rel="noopener">Shop</a>`);
+  }
+  return buttons.join('\n      ') || `<span class="muted-text">Contact information not available.</span>`;
+}
+
+// --- E-commerce page -------------------------------------------------
+
+function renderEcommercePage(client, featuredProducts) {
+  const serviceAreaText = describeServiceArea(client.service_area);
+
+  const productCards = featuredProducts.length > 0
+    ? `<div class="products-grid">
+${featuredProducts.map(p => renderProductCard(p)).join('\n')}
+</div>`
+    : `<p class="muted-text">Featured products coming soon.</p>`;
+
+  const shopButton = client.shop_url
+    ? `<a class="shop-cta" href="${escapeAttr(client.shop_url)}" target="_blank" rel="noopener">Browse the full shop →</a>`
+    : '';
+
+  const extraCss = `
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 24px; margin-top: 24px; font-size: 14px; color: var(--text-muted); }
+    .hero-meta .meta-label { color: var(--text-dim); text-transform: uppercase; font-size: 11px; letter-spacing: 0.12em; }
+    .shop-cta {
+      display: inline-block;
+      margin-top: 24px;
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--accent);
+      border-bottom: 1px solid var(--accent);
+      padding-bottom: 2px;
+    }
+    .shop-cta:hover { border-bottom-color: var(--accent-hover); color: var(--accent-hover); text-decoration: none; }
+    .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; }
+    .product-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      transition: border-color 150ms ease, transform 150ms ease;
+      display: block;
+    }
+    .product-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      text-decoration: none;
+      color: inherit;
+    }
+    .product-image {
+      aspect-ratio: 3 / 4;
+      background: var(--bg-elevated-2);
+      overflow: hidden;
+      position: relative;
+    }
+    .product-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .product-info { padding: 14px 16px 16px; }
+    .product-category {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+    }
+    .product-name {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text);
+      margin-bottom: 6px;
+      line-height: 1.35;
+    }
+    .product-price {
+      font-size: 14px;
+      color: var(--accent);
+      font-weight: 500;
+    }
+    .product-out-of-stock {
+      color: var(--text-dim);
+      font-size: 12px;
+      font-style: italic;
+    }
+    .info-grid-ec { display: grid; grid-template-columns: 1fr; gap: 24px; }
+    @media (min-width: 720px) { .info-grid-ec { grid-template-columns: 1fr 1fr; } }
+    .info-block-ec {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 22px;
+    }
+    .info-block-ec h3 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+    }
+    .info-block-ec p { color: var(--text-muted); font-size: 14px; line-height: 1.55; }
+    .muted-text { color: var(--text-muted); font-size: 15px; }
+  `;
+
+  const body = `
+  <header class="hero">
+    <h1>${escapeHtml(client.business_name)}</h1>
+    ${client.tagline ? `<p class="tagline">${escapeHtml(client.tagline)}</p>` : ''}
+    ${client.description ? `<p class="description">${escapeHtml(client.description)}</p>` : ''}
+    ${shopButton}
+    ${serviceAreaText ? `<div class="hero-meta">
+      <div><span class="meta-label">Based in · </span>${escapeHtml((client.service_area && (client.service_area.city || client.service_area.state)) || '—')}</div>
+    </div>` : ''}
+  </header>
+
+  <section class="section">
+    <h2>Featured</h2>
+    ${productCards}
+  </section>
+
+  <section class="section">
+    <h2>Shop Information</h2>
+    <div class="info-grid-ec">
+      ${client.shipping_policy ? `<div class="info-block-ec"><h3>Shipping</h3><p>${escapeHtml(client.shipping_policy)}</p></div>` : ''}
+      ${client.return_policy ? `<div class="info-block-ec"><h3>Returns</h3><p>${escapeHtml(client.return_policy)}</p></div>` : ''}
+      ${serviceAreaText ? `<div class="info-block-ec"><h3>Ships To</h3><p>${escapeHtml(serviceAreaText)}</p></div>` : ''}
+      ${client.email ? `<div class="info-block-ec"><h3>Customer Service</h3><p><a href="mailto:${escapeAttr(client.email)}">${escapeHtml(client.email)}</a></p></div>` : ''}
+    </div>
+  </section>
+
+  ${renderFooter(client)}
+`;
+
+  return htmlShell(client.business_name, body, extraCss);
+}
+
+function renderProductCard(product) {
+  const price = `$${(product.price_cents / 100).toFixed(2)}`;
+  const priceLine = product.in_stock
+    ? `<div class="product-price">${price}</div>`
+    : `<div class="product-out-of-stock">Sold out</div>`;
+  const href = product.product_url || '#';
+  const imgSrc = product.image_url || 'https://placehold.co/600x800/1a1a1a/6a6a6a?text=No+Image';
+  return `<a class="product-card" href="${escapeAttr(href)}" target="_blank" rel="noopener">
+  <div class="product-image"><img src="${escapeAttr(imgSrc)}" alt="${escapeAttr(product.name)}" loading="lazy"></div>
+  <div class="product-info">
+    <div class="product-category">${escapeHtml(product.category || '')}</div>
+    <div class="product-name">${escapeHtml(product.name)}</div>
+    ${priceLine}
+  </div>
+</a>`;
+}
+
+function renderNotFoundPage(slug) {
+  const body = `
+  <div style="padding: 80px 0; text-align: center;">
+    <h1 style="font-size: 48px; margin-bottom: 12px;">Not found</h1>
+    <p style="color: var(--text-muted); font-size: 16px;">No public profile exists for <code style="color: var(--text);">${escapeHtml(slug)}</code>.</p>
+    <p style="margin-top: 32px;"><a href="https://leadstampede.io">Return to Lead Stampede →</a></p>
+  </div>`;
+  return htmlShell('Not found', body);
+}
+
+// ---------------------------------------------------------------------
 // Response helpers
 // ---------------------------------------------------------------------
 function json(body, status = 200, extraHeaders = {}) {
@@ -357,10 +825,38 @@ function json(body, status = 200, extraHeaders = {}) {
   });
 }
 
+function htmlResponse(body, status = 200, extraHeaders = {}) {
+  return new Response(body, {
+    status,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      ...corsHeaders(),
+      ...extraHeaders,
+    },
+  });
+}
+
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, User-Agent',
   };
+}
+
+// ---------------------------------------------------------------------
+// HTML escaping — never trust DB data directly in HTML output
+// ---------------------------------------------------------------------
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeAttr(s) {
+  return escapeHtml(s);
 }

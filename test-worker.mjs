@@ -98,13 +98,42 @@ globalThis.fetch = async (url) => {
     // If the query includes demo_only=eq.false, respect it (public Worker path)
     const demoOnlyFilter = /demo_only=eq\.false/.test(urlStr);
     if (demoOnlyFilter && row && row.demo_only === true) {
-      // Demo client hidden from public Worker — return empty result
       return { ok: true, status: 200, json: async () => [], text: async () => '' };
     }
     return {
       ok: true,
       status: 200,
       json: async () => (row ? [row] : []),
+      text: async () => '',
+    };
+  }
+  if (urlStr.includes('/rest/v1/products')) {
+    // Return a couple of fixture products for any client_id query
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ([
+        {
+          id: 'p1',
+          slug: 'sample-jacket',
+          name: 'Sample Leather Jacket',
+          category: 'jackets',
+          price_cents: 49500,
+          in_stock: true,
+          image_url: 'https://placehold.co/600x800/5C3A21/ffffff?text=Jacket',
+          product_url: 'https://example.com/jacket',
+        },
+        {
+          id: 'p2',
+          slug: 'sample-skirt',
+          name: 'Sample Studded Skirt',
+          category: 'skirts',
+          price_cents: 29500,
+          in_stock: false,
+          image_url: 'https://placehold.co/600x800/0a0a0a/ffffff?text=Skirt',
+          product_url: 'https://example.com/skirt',
+        },
+      ]),
       text: async () => '',
     };
   }
@@ -257,10 +286,111 @@ await test('well-known path works for e-commerce too', async () => {
   assertEq(card.skills.length, 6, 'ecommerce skill count via well-known');
 });
 
-console.log('\n=== Sample output: public e-commerce card ===');
-const sampleRes = await get('/test-ecommerce-public');
-const sampleCard = await sampleRes.json();
-console.log(JSON.stringify(sampleCard, null, 2).slice(0, 2000) + '...\n[truncated]');
+console.log('\n=== Viewer route — service client ===');
+await test('returns HTML for service client viewer', async () => {
+  const res = await get('/grandinetti-molinar-law/view');
+  assertEq(res.status, 200, 'status');
+  assertEq(res.headers.get('content-type').startsWith('text/html'), true, 'content type is HTML');
+  const html = await res.text();
+  assert(html.includes('<!DOCTYPE html>'), 'has doctype');
+  assert(html.includes('Grandinetti &amp; Molinar Law'), 'business name rendered');
+  assert(html.includes('Family Law'), 'services rendered');
+  assert(html.includes('Powered by'), 'powered by footer');
+  assert(html.includes('Lead Stampede'), 'lead stampede attribution');
+});
+
+await test('service viewer includes contact buttons', async () => {
+  const res = await get('/grandinetti-molinar-law/view');
+  const html = await res.text();
+  assert(html.includes('Call '), 'has call button');
+  assert(html.includes('tel:'), 'has tel: link');
+  assert(html.includes('Visit Website'), 'has website button');
+});
+
+await test('service viewer does NOT render product grid', async () => {
+  const res = await get('/grandinetti-molinar-law/view');
+  const html = await res.text();
+  assert(!html.includes('Featured Products'), 'no product section');
+  assert(!html.includes('products-grid'), 'no products grid class');
+});
+
+console.log('\n=== Viewer route — public e-commerce client ===');
+await test('returns HTML for e-commerce client viewer with products', async () => {
+  const res = await get('/test-ecommerce-public/view');
+  assertEq(res.status, 200, 'status');
+  const html = await res.text();
+  assert(html.includes('Test Public Store'), 'brand name rendered');
+  assert(html.includes('Featured'), 'featured section present');
+  assert(html.includes('Sample Leather Jacket'), 'first product rendered');
+  assert(html.includes('Sample Studded Skirt'), 'second product rendered');
+  assert(html.includes('$495.00') || html.includes('$495'), 'price formatted correctly');
+  assert(html.includes('Sold out'), 'out-of-stock product shows sold out');
+});
+
+await test('e-commerce viewer does NOT render service-y elements', async () => {
+  const res = await get('/test-ecommerce-public/view');
+  const html = await res.text();
+  assert(!html.includes('services-grid'), 'no services grid');
+  assert(!html.includes('Book Online'), 'no booking button');
+});
+
+await test('e-commerce viewer renders Browse the full shop link', async () => {
+  const res = await get('/test-ecommerce-public/view');
+  const html = await res.text();
+  assert(html.includes('Browse the full shop'), 'shop CTA present');
+});
+
+console.log('\n=== Viewer route — demo-mode isolation ===');
+await test('demo-only client returns 404 HTML for viewer', async () => {
+  const res = await get('/understated-leather/view');
+  assertEq(res.status, 404, 'should 404');
+  assertEq(res.headers.get('content-type').startsWith('text/html'), true, 'returns HTML 404 page');
+  const html = await res.text();
+  assert(html.includes('Not found'), 'shows not found');
+  assert(html.includes('understated-leather'), 'shows the requested slug');
+});
+
+await test('unknown slug on viewer also returns HTML 404', async () => {
+  const res = await get('/does-not-exist-anywhere/view');
+  assertEq(res.status, 404, 'should 404');
+  assertEq(res.headers.get('content-type').startsWith('text/html'), true, 'HTML 404');
+});
+
+console.log('\n=== Viewer security — HTML escaping ===');
+await test('dangerous strings in business data are escaped', async () => {
+  // Inject a new fixture with a script-injection attempt in business_name
+  fixtures['evil-client'] = {
+    id: 'evil-uuid',
+    slug: 'evil-client',
+    business_name: '<script>alert(1)</script>Evil Co',
+    tagline: 'tagline " onmouseover=alert(2)',
+    description: 'desc',
+    industry: 'services',
+    business_type: 'service',
+    services: ['<img src=x onerror=alert(3)>'],
+    service_area: { city: 'Austin' },
+    phone: null, email: null, website: null, shop_url: null, booking_url: null,
+    hours: {},
+    demo_only: false,
+    active: true,
+  };
+  const res = await get('/evil-client/view');
+  const html = await res.text();
+  // Real test: make sure no raw script tag exists
+  assert(!html.includes('<script>alert(1)'), 'script tag not rendered raw');
+  assert(html.includes('&lt;script&gt;'), 'script tag properly escaped to entities');
+  // Real test: make sure quotes in tagline are escaped so they can't break out of the attribute context
+  // (even though tagline is in element body not attribute, we still want &quot;)
+  assert(html.includes('&quot;'), 'quote escaped to entity');
+  // Real test: make sure the img tag is rendered as text, not as an actual img element
+  assert(!html.includes('<img src=x onerror'), 'raw img tag not rendered');
+  assert(html.includes('&lt;img src=x onerror=alert(3)&gt;'), 'img tag properly escaped');
+});
+
+console.log('\n=== Sample output: e-commerce viewer (truncated) ===');
+const viewerRes = await get('/test-ecommerce-public/view');
+const viewerHtml = await viewerRes.text();
+console.log(viewerHtml.slice(0, 1500) + '\n[...truncated...]\n');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
