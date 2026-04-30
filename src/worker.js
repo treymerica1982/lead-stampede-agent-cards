@@ -45,6 +45,13 @@ export default {
       return json({ status: 'ok', timestamp: new Date().toISOString() });
     }
 
+    // Booking redirect — must be checked BEFORE parsePath() so 'b' isn't
+    // treated as a client slug.
+    const bookingMatch = url.pathname.match(/^\/b\/([^/]+)$/);
+    if (bookingMatch) {
+      return handleBookingRedirect(request, env, ctx, bookingMatch[1]);
+    }
+
     const parsed = parsePath(url.pathname);
     if (!parsed) {
       return json({ error: 'invalid_path', message: 'Expected /{client-slug} or /{client-slug}/view' }, 400);
@@ -189,6 +196,117 @@ async function logCardView({ clientId, requestingAgent, sourceIp, responseMs, en
   } catch (err) {
     console.error('[analytics]', err.message);
   }
+}
+
+// ---------------------------------------------------------------------
+// Booking redirect — /b/{token}
+// ---------------------------------------------------------------------
+async function handleBookingRedirect(request, env, ctx, token) {
+  // 1. Validate token format (12 chars, URL-safe alphabet)
+  if (!/^[A-Za-z0-9_-]{12}$/.test(token)) {
+    return bookingNotFoundResponse();
+  }
+
+  // 2. Look up token in booking_url_tokens
+  const res = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/booking_url_tokens?token=eq.${encodeURIComponent(token)}&select=id,target_url,expires_at`,
+    {
+      headers: {
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!res.ok) {
+    console.error(`[booking-redirect] token lookup ${res.status} ${await res.text()}`);
+    return bookingNotFoundResponse();
+  }
+
+  const rows = await res.json();
+  const tokenRow = rows[0] || null;
+
+  if (!tokenRow) {
+    return bookingNotFoundResponse();
+  }
+
+  // 3. Check expiry
+  if (new Date(tokenRow.expires_at) < new Date()) {
+    return bookingNotFoundResponse();
+  }
+
+  // 4. Log click async (don't block redirect)
+  ctx.waitUntil(logBookingClick(tokenRow.id, request, env));
+
+  // 5. Redirect
+  return new Response(null, {
+    status: 302,
+    headers: {
+      'Location': tokenRow.target_url,
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
+async function logBookingClick(tokenId, request, env) {
+  try {
+    await fetch(`${env.SUPABASE_URL}/rest/v1/booking_url_clicks`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        token_id: tokenId,
+        user_agent: request.headers.get('user-agent') || null,
+        referrer: request.headers.get('referer') || null,
+        ip_address: request.headers.get('cf-connecting-ip') || null,
+        country: request.cf?.country || null,
+      }),
+    });
+  } catch (err) {
+    console.error('[booking-redirect] click log failed:', err.message);
+  }
+}
+
+function bookingNotFoundResponse() {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Link Expired</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 480px; margin: 80px auto; padding: 24px;
+      color: #111; line-height: 1.5;
+    }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    p { color: #555; }
+    .footer { margin-top: 32px; font-size: 13px; color: #888; }
+  </style>
+</head>
+<body>
+  <h1>This link has expired</h1>
+  <p>The booking link you followed is no longer valid. It may have
+  expired or been mistyped.</p>
+  <p>Please visit the business's website directly, or contact them
+  by phone or email to schedule.</p>
+  <div class="footer">Powered by Lead Stampede</div>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 404,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+    },
+  });
 }
 
 // ---------------------------------------------------------------------
