@@ -316,10 +316,14 @@ function buildAgentCard(client, env) {
   const mcpBase = env.MCP_BASE_URL || 'http://localhost:3000';
   const businessType = client.business_type || 'service';
 
-  const skills =
-    businessType === 'ecommerce'
-      ? buildEcommerceSkills(client)
-      : buildServiceSkills(client);
+  let skills;
+  if (businessType === 'ecommerce') {
+    skills = buildEcommerceSkills(client);
+  } else if (businessType === 'automotive') {
+    skills = buildAutomotiveSkills(client);
+  } else {
+    skills = buildServiceSkills(client);
+  }
 
   return {
     name: client.business_name,
@@ -490,6 +494,106 @@ function buildEcommerceSkills(client) {
         `What do people say about ${brandName}?`,
         `Is ${brandName} well-reviewed?`,
         `How many reviews does ${brandName} have?`,
+      ],
+    },
+  ];
+}
+
+function buildAutomotiveSkills(client) {
+  const dealerName = client.business_name;
+  const make = client.industry || 'automotive';
+
+  return [
+    {
+      id: 'get_business_profile',
+      name: 'Get Dealership Profile',
+      description: `Returns dealership name, location, hours, departments, and contact info for ${dealerName}.`,
+      tags: ['profile', 'about', 'dealership', 'automotive', make].filter(Boolean),
+      examples: [
+        `Tell me about ${dealerName}`,
+        `Where is ${dealerName} located?`,
+        `How do I contact ${dealerName}?`,
+      ],
+    },
+    {
+      id: 'search_inventory',
+      name: 'Search Vehicle Inventory',
+      description: `Searches the ${dealerName} vehicle inventory by stock type (new/used/certified pre-owned), make, model, year, price range, body type, and fuel type. Optional natural-language query for things like "electric SUV" or "AWD wagon under $40k". Returns matching vehicles with year, make, model, trim, mileage, price, and a link to the listing.`,
+      tags: ['inventory', 'vehicles', 'cars', 'search', 'browse', 'automotive', make].filter(Boolean),
+      examples: [
+        `What new ${make}s does ${dealerName} have under $40k?`,
+        `Show me the certified pre-owned SUVs at ${dealerName}`,
+        `Does ${dealerName} have any electric vehicles?`,
+        `Find me a ${make} wagon at ${dealerName}`,
+      ],
+    },
+    {
+      id: 'get_vehicle_details',
+      name: 'Get Vehicle Details',
+      description: `Returns full details for a specific vehicle in ${dealerName}'s inventory by VIN or stock number: year, make, model, trim, mileage, price, MSRP, features, exterior/interior color, fuel economy, and listing URL.`,
+      tags: ['vehicle', 'details', 'specs', 'features', 'automotive', make].filter(Boolean),
+      examples: [
+        `Tell me more about that ${make} Tiguan`,
+        `What features does this vehicle have?`,
+        `What's the MSRP on stock number V25-001?`,
+      ],
+    },
+    {
+      id: 'get_specials',
+      name: 'Get Current Specials',
+      description: `Returns ${dealerName}'s current specials and offers — new-vehicle APR/lease specials, pre-owned specials, service & parts coupons, manufacturer rebates, and incentive programs (College Grad, Military). Each offer includes a title, summary, and a link to the dealer's offer page.`,
+      tags: ['specials', 'offers', 'deals', 'rebates', 'incentives', 'automotive', make].filter(Boolean),
+      examples: [
+        `What specials does ${dealerName} have right now?`,
+        `Are there any lease deals at ${dealerName}?`,
+        `Any service coupons available?`,
+        `Does ${dealerName} have a military discount?`,
+      ],
+    },
+    {
+      id: 'get_availability',
+      name: 'Get Hours and Availability',
+      description: `Returns ${dealerName}'s sales, service, and parts department hours. Includes whether online scheduling is available for service appointments.`,
+      tags: ['hours', 'availability', 'schedule', 'departments', 'automotive'],
+      examples: [
+        `When is ${dealerName} open?`,
+        `What are ${dealerName}'s service hours?`,
+        `Is the parts department open on Saturday?`,
+      ],
+    },
+    {
+      id: 'get_reviews',
+      name: 'Get Reviews and Reputation',
+      description: `Returns review count, average rating, and a summary of customer feedback for ${dealerName}.`,
+      tags: ['reviews', 'ratings', 'reputation', 'social-proof', 'automotive'],
+      examples: [
+        `What do people say about ${dealerName}?`,
+        `How many reviews does ${dealerName} have?`,
+        `Is ${dealerName} a good dealership?`,
+      ],
+    },
+    {
+      id: 'schedule_service_appointment',
+      name: 'Schedule a Service Appointment',
+      description: `Captures a service appointment request for ${dealerName} — customer info, vehicle (year/make/model/VIN), requested services (oil change, tires, diagnostics, recall work, etc.), and preferred timing. Returns a tracked link to the official online scheduler so the service advisor can confirm the exact slot.`,
+      tags: ['service', 'appointment', 'maintenance', 'repair', 'booking', 'automotive', make].filter(Boolean),
+      examples: [
+        `I need an oil change for my ${make}`,
+        `Can I schedule service at ${dealerName}?`,
+        `My check engine light is on — book me at ${dealerName}`,
+        `When can I bring my Tiguan in for tires?`,
+      ],
+    },
+    {
+      id: 'contact_sales',
+      name: 'Contact Sales',
+      description: `Captures a sales lead for ${dealerName}. Use for test drive requests, vehicle inquiries, financing questions, lease questions, trade-in conversations, or general "I'm interested in this car" requests. Captures customer info, intent (test_drive, vehicle_inquiry, financing, lease, trade_in, general), and the specific vehicle of interest if known. The sales team follows up by the customer's preferred contact method.`,
+      tags: ['sales', 'test-drive', 'financing', 'lease', 'trade-in', 'inquiry', 'automotive', make].filter(Boolean),
+      examples: [
+        `I want to test drive a ${make} ID.4`,
+        `Can ${dealerName} give me a finance quote?`,
+        `What would my trade-in be worth at ${dealerName}?`,
+        `I'm interested in leasing a ${make} Atlas`,
       ],
     },
   ];

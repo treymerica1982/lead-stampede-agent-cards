@@ -87,6 +87,23 @@ const fixtures = {
     demo_only: false,
     active: true,
   },
+  'test-automotive-public': {
+    id: 'test-auto-uuid',
+    slug: 'test-automotive-public',
+    business_name: 'Test Automotive Dealer',
+    description: 'A test automotive dealer for skill verification.',
+    industry: 'Volkswagen',
+    business_type: 'automotive',
+    services: [],
+    service_area: { city: 'Austin', state: 'TX', regions: ['Texas'] },
+    phone: '512-555-0100',
+    email: 'sales@example.com',
+    website: 'https://example.com',
+    booking_url: 'https://example.com/schedule',
+    hours: { mon: '9am-8pm' },
+    demo_only: false,
+    active: true,
+  },
 };
 
 globalThis.fetch = async (url) => {
@@ -284,6 +301,42 @@ await test('well-known path works for e-commerce too', async () => {
   assertEq(res.status, 200, 'status');
   const card = await res.json();
   assertEq(card.skills.length, 6, 'ecommerce skill count via well-known');
+});
+
+console.log('\n=== Automotive client (public, not demo) ===');
+await test('returns 8 automotive skills', async () => {
+  const res = await get('/test-automotive-public');
+  assertEq(res.status, 200, 'status');
+  const card = await res.json();
+  assertEq(card.skills.length, 8, 'automotive skill count');
+  const ids = card.skills.map(s => s.id).sort();
+  const expected = [
+    'contact_sales',
+    'get_availability',
+    'get_business_profile',
+    'get_reviews',
+    'get_specials',
+    'get_vehicle_details',
+    'schedule_service_appointment',
+    'search_inventory',
+  ];
+  assertEq(ids.join(','), expected.join(','), 'expected 8 skill ids');
+  assertEq(card.metadata.businessType, 'automotive', 'metadata businessType');
+});
+
+await test('search_inventory skill mentions the dealer name', async () => {
+  const res = await get('/test-automotive-public');
+  const card = await res.json();
+  const si = card.skills.find(s => s.id === 'search_inventory');
+  assert(si, 'search_inventory present');
+  assert(si.description.includes('Test Automotive Dealer'), 'mentions dealer');
+});
+
+await test('get_services is absent from automotive card', async () => {
+  const res = await get('/test-automotive-public');
+  const card = await res.json();
+  const ids = card.skills.map(s => s.id);
+  assert(!ids.includes('get_services'), 'get_services correctly absent');
 });
 
 console.log('\n=== Viewer route — service client ===');
