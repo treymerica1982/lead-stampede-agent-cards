@@ -47,7 +47,7 @@ export default {
 
     // Google Search Console verification file
     if (url.pathname === '/google7b48868a212b3f77.html') {
-      return new Response('google-site-verification: HtJknT67cZpBBeyL5eMlA9TvJ72z_Ius8gHNpJswru4', {
+      return new Response('google-site-verification: google7b48868a212b3f77.html', {
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
       });
     }
