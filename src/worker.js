@@ -45,6 +45,13 @@ export default {
       return json({ status: 'ok', timestamp: new Date().toISOString() });
     }
 
+    // Google Search Console verification file
+    if (url.pathname === '/google7b48868a212b3f77.html') {
+      return new Response('google-site-verification: HtJknT67cZpBBeyL5eMlA9TvJ72z_Ius8gHNpJswru4', {
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
+    }
+
     // Booking redirect — must be checked BEFORE parsePath() so 'b' isn't
     // treated as a client slug.
     const bookingMatch = url.pathname.match(/^\/b\/([^/]+)$/);
@@ -60,14 +67,14 @@ export default {
 
     const client = await fetchClient(slug, env);
     if (!client) {
-      if (route === 'view') {
+      if (route === 'html' || route === 'view') {
         return htmlResponse(renderNotFoundPage(slug), 404);
       }
       return json({ error: 'client_not_found', slug }, 404);
     }
 
     // Branch on route type
-    if (route === 'view') {
+    if (route === 'html' || route === 'view') {
       // Fetch featured products for e-commerce clients so the page can render them
       const featuredProducts = client.business_type === 'ecommerce'
         ? await fetchFeaturedProducts(client.id, env)
@@ -90,7 +97,7 @@ export default {
       });
     }
 
-    // Default route = JSON Agent Card
+    // JSON Agent Card — only via .well-known path
     const card = buildAgentCard(client, env);
 
     ctx.waitUntil(
@@ -112,7 +119,7 @@ export default {
 // ---------------------------------------------------------------------
 // Path parsing — identifies which route was requested
 // Supports:
-//   /{slug}                          → { slug, route: 'card' }
+//   /{slug}                          → { slug, route: 'html' }
 //   /{slug}/.well-known/agent-card.json → { slug, route: 'card' }
 //   /{slug}/view                     → { slug, route: 'view' }
 // ---------------------------------------------------------------------
@@ -121,7 +128,7 @@ function parsePath(pathname) {
   if (parts.length === 0) return null;
 
   if (parts.length === 1) {
-    return { slug: parts[0], route: 'card' };
+    return { slug: parts[0], route: 'html' };
   }
   if (parts.length === 2 && parts[1] === 'view') {
     return { slug: parts[0], route: 'view' };
@@ -620,13 +627,100 @@ function describeServiceArea(area) {
 }
 
 // ---------------------------------------------------------------------
+// Schema.org JSON-LD builder — structured data for search engines
+// Escaping note: the caller (htmlShell) must escape "</" as "<\/" in
+// the serialized output before embedding in <script> tags.
+// ---------------------------------------------------------------------
+function buildSchemaJsonLd(client) {
+  const typeMap = {
+    service: 'ProfessionalService',
+    ecommerce: 'Store',
+    automotive: 'AutoDealer',
+  };
+
+  const ld = {
+    '@context': 'https://schema.org',
+    '@type': typeMap[client.business_type] || 'LocalBusiness',
+    name: client.business_name,
+  };
+
+  if (client.description) ld.description = client.description;
+  if (client.website) ld.url = client.website;
+  if (client.phone) ld.telephone = client.phone;
+  if (client.email) ld.email = client.email;
+
+  // Address from service_area JSONB
+  const area = client.service_area;
+  if (area && typeof area === 'object') {
+    if (area.city || area.state) {
+      const addr = { '@type': 'PostalAddress', addressCountry: 'US' };
+      if (area.city) addr.addressLocality = area.city;
+      if (area.state) addr.addressRegion = area.state;
+      ld.address = addr;
+    }
+    if (Array.isArray(area.regions) && area.regions.length > 0) {
+      ld.areaServed = area.regions.map(r => ({ '@type': 'Place', name: r }));
+    }
+  }
+
+  // Opening hours from hours JSONB
+  if (client.hours && typeof client.hours === 'object') {
+    const dayMap = {
+      mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday',
+      fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
+    };
+    const specs = [];
+    for (const [key, label] of Object.entries(dayMap)) {
+      const val = client.hours[key];
+      if (!val || /closed/i.test(val)) continue;
+      const match = val.match(/^(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-–]\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
+      if (match) {
+        specs.push({
+          '@type': 'OpeningHoursSpecification',
+          dayOfWeek: label,
+          opens: normalizeTime(match[1]),
+          closes: normalizeTime(match[2]),
+        });
+      }
+    }
+    if (specs.length > 0) ld.openingHoursSpecification = specs;
+  }
+
+  // Aggregate rating — only when review_count > 0 and average_rating is non-null
+  if (client.review_count > 0 && client.average_rating != null) {
+    ld.aggregateRating = {
+      '@type': 'AggregateRating',
+      ratingValue: client.average_rating,
+      reviewCount: client.review_count,
+    };
+  }
+
+  return ld;
+}
+
+// Normalize "9am" / "5:00pm" / "8:30am" → "09:00" / "17:00" / "08:30"
+function normalizeTime(raw) {
+  const s = raw.trim().toLowerCase();
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+  if (!m) return s;
+  let h = parseInt(m[1], 10);
+  const min = m[2] || '00';
+  const period = m[3];
+  if (period === 'pm' && h < 12) h += 12;
+  if (period === 'am' && h === 12) h = 0;
+  return `${String(h).padStart(2, '0')}:${min}`;
+}
+
+// ---------------------------------------------------------------------
 // HTML renderer — human-readable viewer page
 // ---------------------------------------------------------------------
 function renderViewerPage(client, featuredProducts, env) {
   const businessType = client.business_type || 'service';
-  return businessType === 'ecommerce'
-    ? renderEcommercePage(client, featuredProducts)
-    : renderServicePage(client);
+  if (businessType === 'ecommerce') {
+    return renderEcommercePage(client, featuredProducts);
+  }
+  // TODO: dedicated automotive renderer when automotive goes non-demo (SOP §22.6)
+  return renderServicePage(client);
 }
 
 const SHARED_CSS = `
@@ -726,14 +820,27 @@ const SHARED_CSS = `
   }
 `;
 
-function htmlShell(title, bodyContent, extraCss = '') {
+function htmlShell(title, bodyContent, extraCss = '', meta = {}) {
+  const descTag = meta.description
+    ? `\n<meta name="description" content="${escapeAttr(meta.description)}">`
+    : '';
+  const ogTags = meta.ogTitle
+    ? `\n<meta property="og:title" content="${escapeAttr(meta.ogTitle)}">
+<meta property="og:description" content="${escapeAttr(meta.description || '')}">
+<meta property="og:url" content="${escapeAttr(meta.canonicalUrl || '')}">
+<meta property="og:type" content="website">`
+    : '';
+  const ldTag = meta.jsonLd
+    ? `\n<script type="application/ld+json">${JSON.stringify(meta.jsonLd, null, 2).replace(/<\//g, '<\\/')}</script>`
+    : '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)}</title>
-<meta name="robots" content="noindex">
+<meta name="google-site-verification" content="HtJknT67cZpBBeyL5eMlA9TvJ72z_Ius8gHNpJswru4" />
+<title>${escapeHtml(title)}</title>${descTag}${ogTags}${ldTag}
 <style>${SHARED_CSS}${extraCss}</style>
 </head>
 <body>
@@ -747,9 +854,40 @@ ${bodyContent}
 function renderFooter(client) {
   return `
   <div class="footer">
-    <span class="ai-badge">AI-readable profile · <a href="/${escapeHtml(client.slug)}">view raw Agent Card →</a></span>
+    <span class="ai-badge">AI-readable profile · <a href="/${escapeHtml(client.slug)}/.well-known/agent-card.json">view raw Agent Card →</a></span>
     <span>Powered by <a href="https://leadstampede.io">Lead Stampede</a></span>
   </div>`;
+}
+
+// --- Page meta builder (shared by service + ecommerce renderers) ------
+
+function buildPageMeta(client) {
+  const area = client.service_area;
+  const city = area && area.city ? area.city : '';
+  const state = area && area.state ? area.state : '';
+  const location = city && state ? ` in ${city}, ${state}` : city ? ` in ${city}` : state ? ` in ${state}` : '';
+  const subtitle = client.tagline || (Array.isArray(client.services) && client.services[0]) || '';
+
+  let title = client.business_name;
+  if (subtitle) title += ` \u2014 ${subtitle}`;
+  if (location) title += location;
+  if (title.length > 60) title = title.slice(0, 57) + '...';
+
+  let description = client.business_name;
+  if (subtitle) description += ` \u2014 ${subtitle}`;
+  if (location) description += location + '.';
+  if (client.review_count > 0 && client.average_rating != null) {
+    description += ` Rated ${client.average_rating} from ${client.review_count} reviews.`;
+  }
+  if (description.length > 160) description = description.slice(0, 157) + '...';
+
+  return {
+    description,
+    ogTitle: title,
+    canonicalUrl: `https://lead-stampede-cards.trey-1cb.workers.dev/${client.slug}`,
+    jsonLd: buildSchemaJsonLd(client),
+    _title: title,
+  };
 }
 
 // --- Service business page -------------------------------------------
@@ -803,13 +941,19 @@ ${services.map(s => `  <div class="service-card">${escapeHtml(typeof s === 'stri
     .contact-btn.primary:hover { background: var(--accent-hover); }
     .muted-text { color: var(--text-muted); font-size: 15px; }
     .pricing-summary { color: var(--text-muted); font-size: 15px; margin-top: 16px; line-height: 1.6; }
+    .review-line { font-size: 15px; color: var(--accent); margin-top: 16px; }
   `;
+
+  const reviewLine = client.review_count > 0 && client.average_rating != null
+    ? `<p class="review-line">\u2605 ${escapeHtml(String(client.average_rating))} \u00b7 ${escapeHtml(String(client.review_count))} reviews</p>`
+    : '';
 
   const body = `
   <header class="hero">
     <h1>${escapeHtml(client.business_name)}</h1>
     ${client.tagline ? `<p class="tagline">${escapeHtml(client.tagline)}</p>` : ''}
     ${client.description ? `<p class="description">${escapeHtml(client.description)}</p>` : ''}
+    ${reviewLine}
   </header>
 
   <section class="section">
@@ -841,7 +985,8 @@ ${services.map(s => `  <div class="service-card">${escapeHtml(typeof s === 'stri
   ${renderFooter(client)}
 `;
 
-  return htmlShell(client.business_name, body, extraCss);
+  const meta = buildPageMeta(client);
+  return htmlShell(meta._title, body, extraCss, meta);
 }
 
 function renderHoursTable(hours) {
@@ -972,13 +1117,19 @@ ${featuredProducts.map(p => renderProductCard(p)).join('\n')}
     }
     .info-block-ec p { color: var(--text-muted); font-size: 14px; line-height: 1.55; }
     .muted-text { color: var(--text-muted); font-size: 15px; }
+    .review-line { font-size: 15px; color: var(--accent); margin-top: 16px; }
   `;
+
+  const reviewLine = client.review_count > 0 && client.average_rating != null
+    ? `<p class="review-line">\u2605 ${escapeHtml(String(client.average_rating))} \u00b7 ${escapeHtml(String(client.review_count))} reviews</p>`
+    : '';
 
   const body = `
   <header class="hero">
     <h1>${escapeHtml(client.business_name)}</h1>
     ${client.tagline ? `<p class="tagline">${escapeHtml(client.tagline)}</p>` : ''}
     ${client.description ? `<p class="description">${escapeHtml(client.description)}</p>` : ''}
+    ${reviewLine}
     ${shopButton}
     ${serviceAreaText ? `<div class="hero-meta">
       <div><span class="meta-label">Based in · </span>${escapeHtml((client.service_area && (client.service_area.city || client.service_area.state)) || '—')}</div>
@@ -1003,7 +1154,8 @@ ${featuredProducts.map(p => renderProductCard(p)).join('\n')}
   ${renderFooter(client)}
 `;
 
-  return htmlShell(client.business_name, body, extraCss);
+  const meta = buildPageMeta(client);
+  return htmlShell(meta._title, body, extraCss, meta);
 }
 
 function renderProductCard(product) {
