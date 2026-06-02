@@ -52,6 +52,70 @@ export default {
       });
     }
 
+    // robots.txt — AI-crawler allow-list + sitemap pointer
+    if (url.pathname === '/robots.txt') {
+      return new Response(
+`User-agent: GPTBot
+Allow: /
+User-agent: OAI-SearchBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: anthropic-ai
+Allow: /
+User-agent: Claude-Web
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Perplexity-User
+Allow: /
+User-agent: Google-Extended
+Allow: /
+User-agent: Googlebot
+Allow: /
+User-agent: Bingbot
+Allow: /
+User-agent: CCBot
+Allow: /
+User-agent: Applebot-Extended
+Allow: /
+User-agent: Meta-ExternalAgent
+Allow: /
+User-agent: *
+Allow: /
+
+Sitemap: https://lead-stampede-cards.trey-1cb.workers.dev/sitemap.xml`,
+        { headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
+      );
+    }
+
+    // sitemap.xml — dynamic, queries Supabase for all public clients
+    if (url.pathname === '/sitemap.xml') {
+      const sitemapRes = await fetch(
+        `${env.SUPABASE_URL}/rest/v1/clients?active=eq.true&demo_only=eq.false&select=slug,updated_at&order=slug.asc`,
+        {
+          headers: {
+            apikey: env.SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+            Accept: 'application/json',
+          },
+        }
+      );
+      if (!sitemapRes.ok) {
+        return new Response('sitemap generation failed', { status: 500, headers: { 'Content-Type': 'text/plain' } });
+      }
+      const clients = await sitemapRes.json();
+      const urls = clients.map(c => {
+        const loc = `https://lead-stampede-cards.trey-1cb.workers.dev/${escapeHtml(c.slug)}`;
+        const lastmod = c.updated_at ? `\n    <lastmod>${c.updated_at.slice(0, 10)}</lastmod>` : '';
+        return `  <url>\n    <loc>${loc}</loc>${lastmod}\n  </url>`;
+      }).join('\n');
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>`;
+      return new Response(xml, { headers: { 'Content-Type': 'application/xml; charset=utf-8' } });
+    }
+
     // Booking redirect — must be checked BEFORE parsePath() so 'b' isn't
     // treated as a client slug.
     const bookingMatch = url.pathname.match(/^\/b\/([^/]+)$/);
