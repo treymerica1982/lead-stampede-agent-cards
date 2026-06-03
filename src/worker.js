@@ -52,6 +52,13 @@ export default {
       });
     }
 
+    // IndexNow verification file
+    if (url.pathname === '/3389fbc581524b258949cf2525438bb3.txt') {
+      return new Response('3389fbc581524b258949cf2525438bb3', {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      });
+    }
+
     // robots.txt — AI-crawler allow-list + sitemap pointer
     if (url.pathname === '/robots.txt') {
       return new Response(
