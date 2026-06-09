@@ -757,6 +757,11 @@ function buildSchemaJsonLd(client) {
     if (specs.length > 0) ld.openingHoursSpecification = specs;
   }
 
+  // sameAs — web profile URLs (social links, directory listings, etc.)
+  if (Array.isArray(client.web_profiles) && client.web_profiles.length > 0) {
+    ld.sameAs = client.web_profiles;
+  }
+
   // Aggregate rating — only when review_count > 0 and average_rating is non-null
   if (client.review_count > 0 && client.average_rating != null) {
     ld.aggregateRating = {
