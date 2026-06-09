@@ -774,6 +774,48 @@ function buildSchemaJsonLd(client) {
   return ld;
 }
 
+// ---------------------------------------------------------------------
+// FAQPage JSON-LD builder — structured data for Google rich results
+// Returns null when faqs is absent or empty so the caller can skip it.
+// ---------------------------------------------------------------------
+function buildFaqJsonLd(client) {
+  if (!Array.isArray(client.faqs) || client.faqs.length === 0) return null;
+
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: client.faqs.map(faq => ({
+      '@type': 'Question',
+      name: faq.q,
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: faq.a,
+      },
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------
+// Visible FAQ section — HTML for the human-readable card pages
+// Returns '' when faqs is absent or empty (graceful omit).
+// ---------------------------------------------------------------------
+function buildFaqSection(client) {
+  if (!Array.isArray(client.faqs) || client.faqs.length === 0) return '';
+
+  const items = client.faqs.map(faq =>
+    `<div class="faq-item">
+        <h3 class="faq-q">${escapeHtml(faq.q)}</h3>
+        <p class="faq-a">${escapeHtml(faq.a)}</p>
+      </div>`
+  ).join('\n    ');
+
+  return `
+  <section class="section">
+    <h2>Frequently Asked Questions</h2>
+    ${items}
+  </section>`;
+}
+
 // Normalize "9am" / "5:00pm" / "8:30am" → "09:00" / "17:00" / "08:30"
 function normalizeTime(raw) {
   const s = raw.trim().toLowerCase();
@@ -857,6 +899,10 @@ const SHARED_CSS = `
     color: var(--text-dim);
     margin-bottom: 20px;
   }
+  .faq-item { margin-bottom: 24px; }
+  .faq-item:last-child { margin-bottom: 0; }
+  .faq-q { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .faq-a { font-size: 15px; color: var(--text-muted); line-height: 1.6; }
   .footer {
     margin-top: 80px;
     padding-top: 32px;
@@ -957,11 +1003,14 @@ function buildPageMeta(client) {
   }
   if (description.length > 160) description = description.slice(0, 157) + '...';
 
+  const ld = buildSchemaJsonLd(client);
+  const faqLd = buildFaqJsonLd(client);
+
   return {
     description,
     ogTitle: title,
     canonicalUrl: `https://lead-stampede-cards.trey-1cb.workers.dev/${client.slug}`,
-    jsonLd: buildSchemaJsonLd(client),
+    jsonLd: faqLd ? [ld, faqLd] : ld,
     _title: title,
   };
 }
@@ -1057,6 +1106,8 @@ ${services.map(s => `  <div class="service-card">${escapeHtml(typeof s === 'stri
       ${contactButtons}
     </div>
   </section>
+
+  ${buildFaqSection(client)}
 
   ${renderFooter(client)}
 `;
@@ -1226,6 +1277,8 @@ ${featuredProducts.map(p => renderProductCard(p)).join('\n')}
       ${client.email ? `<div class="info-block-ec"><h3>Customer Service</h3><p><a href="mailto:${escapeAttr(client.email)}">${escapeHtml(client.email)}</a></p></div>` : ''}
     </div>
   </section>
+
+  ${buildFaqSection(client)}
 
   ${renderFooter(client)}
 `;
