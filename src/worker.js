@@ -17,6 +17,8 @@
  */
 
 const CARD_VERSION = '1.3.0';
+const SITE_BASE = 'https://agentcards.leadstampede.io';
+const OLD_HOST = 'lead-stampede-cards.trey-1cb.workers.dev';
 
 export default {
   async fetch(request, env, ctx) {
@@ -26,6 +28,12 @@ export default {
     // CORS preflight — AI agents calling from browsers need this
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders() });
+    }
+
+    // SEO migration: 301 old workers.dev host → custom domain
+    // Exception: /.well-known/agent-card.json keeps serving on old host for A2A consumers
+    if (url.hostname === OLD_HOST && !url.pathname.endsWith('/.well-known/agent-card.json')) {
+      return Response.redirect(SITE_BASE + url.pathname + url.search, 301);
     }
 
     if (request.method !== 'GET') {
@@ -93,7 +101,7 @@ Allow: /
 User-agent: *
 Allow: /
 
-Sitemap: https://lead-stampede-cards.trey-1cb.workers.dev/sitemap.xml`,
+Sitemap: ${SITE_BASE}/sitemap.xml`,
         { headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
       );
     }
@@ -115,7 +123,7 @@ Sitemap: https://lead-stampede-cards.trey-1cb.workers.dev/sitemap.xml`,
       }
       const clients = await sitemapRes.json();
       const urls = clients.map(c => {
-        const loc = `https://lead-stampede-cards.trey-1cb.workers.dev/${escapeHtml(c.slug)}`;
+        const loc = `${SITE_BASE}/${escapeHtml(c.slug)}`;
         const lastmod = c.updated_at ? `\n    <lastmod>${c.updated_at.slice(0, 10)}</lastmod>` : '';
         return `  <url>\n    <loc>${loc}</loc>${lastmod}\n  </url>`;
       }).join('\n');
@@ -1009,7 +1017,7 @@ function buildPageMeta(client) {
   return {
     description,
     ogTitle: title,
-    canonicalUrl: `https://lead-stampede-cards.trey-1cb.workers.dev/${client.slug}`,
+    canonicalUrl: `${SITE_BASE}/${client.slug}`,
     jsonLd: faqLd ? [ld, faqLd] : ld,
     _title: title,
   };
