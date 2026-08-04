@@ -1031,9 +1031,16 @@ function buildPageMeta(client) {
   const subtitle = client.tagline || (Array.isArray(client.services) && client.services[0]) || '';
 
   let title = client.business_name;
-  if (subtitle) title += ` \u2014 ${subtitle}`;
-  if (location) title += location;
-  if (title.length > 60) title = title.slice(0, 57) + '...';
+  if (subtitle) {
+    let head = `${client.business_name} \u2014 ${subtitle}`;
+    const budget = 60 - location.length;
+    if (head.length > budget) head = head.slice(0, budget - 3) + '...';
+    title = head + location;
+  } else if ((title + location).length > 60) {
+    title = (title + location).slice(0, 57) + '...';
+  } else {
+    title += location;
+  }
 
   let description = client.business_name;
   if (subtitle) description += ` \u2014 ${subtitle}`;
