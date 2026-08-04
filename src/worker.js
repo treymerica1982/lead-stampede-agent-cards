@@ -101,7 +101,8 @@ Allow: /
 User-agent: *
 Allow: /
 
-Sitemap: ${SITE_BASE}/sitemap.xml`,
+Sitemap: ${SITE_BASE}/sitemap.xml
+LLMs: ${SITE_BASE}/llms.txt`,
         { headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
       );
     }
@@ -129,6 +130,37 @@ Sitemap: ${SITE_BASE}/sitemap.xml`,
       }).join('\n');
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>`;
       return new Response(xml, { headers: { 'Content-Type': 'application/xml; charset=utf-8' } });
+    }
+
+    // llms.txt — dynamic, markdown index of all public cards (B2A discoverability)
+    if (url.pathname === '/llms.txt') {
+      const llmsRes = await fetch(
+        `${env.SUPABASE_URL}/rest/v1/clients?active=eq.true&demo_only=eq.false&select=slug,business_name,tagline,description&order=business_name.asc`,
+        {
+          headers: {
+            apikey: env.SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+            Accept: 'application/json',
+          },
+        }
+      );
+      if (!llmsRes.ok) {
+        return new Response('llms.txt generation failed', { status: 500, headers: { 'Content-Type': 'text/plain' } });
+      }
+      const clients = await llmsRes.json();
+      const lines = clients.map(c => {
+        const loc = `${SITE_BASE}/${c.slug}`;
+        const label = c.business_name || c.slug;
+        const blurb = c.tagline || c.description || '';
+        return blurb ? `- [${label}](${loc}): ${blurb}` : `- [${label}](${loc})`;
+      }).join('\n');
+      const body = `# Lead Stampede — Agent Cards\n\n> Machine-readable business profiles for AI search agents. Each card links to a full HTML profile with schema.org structured data and an A2A agent card at /{slug}/.well-known/agent-card.json\n\n## Cards\n\n${lines}\n`;
+      return new Response(body, {
+        headers: {
+          'Content-Type': 'text/markdown; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+        },
+      });
     }
 
     // Booking redirect — must be checked BEFORE parsePath() so 'b' isn't
