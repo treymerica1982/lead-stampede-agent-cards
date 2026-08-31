@@ -1,13 +1,15 @@
 /**
  * Lead Stampede — Agent Card Worker
  *
- * Serves A2A-compliant Agent Cards at:
- *   GET /{slug}                              (JSON — convenience path)
- *   GET /{slug}/.well-known/agent-card.json  (JSON — spec-recommended)
- *   GET /{slug}/view                         (HTML — human-readable viewer page)
+ * Serves Agent Cards at:
+ *   GET /{slug}                              (HTML — human-readable card, crawlable)
+ *   GET /{slug}/.well-known/agent-card.json  (JSON — A2A spec path, for agent callers)
+ *   GET /{slug}/view                         (HTML — alias of the above)
  *
- * The JSON card is for AI agents. The /view route is a human-readable
- * page you can share with prospects and clients.
+ * /{slug} and /{slug}/view render the same HTML; only the .well-known path
+ * returns JSON. (Pre-2026-06 this was reversed — see git history around the
+ * Phase 4 canonical-domain migration for when the HTML-first render shipped
+ * without this comment being updated.)
  *
  * The card's contents auto-adapt to the client's business_type:
  *   - "service"   → profile, services, availability, reviews
@@ -40,14 +42,32 @@ export default {
       return json({ error: 'method_not_allowed' }, 405);
     }
 
-    // Root — simple landing for humans who stumble here
+    // Root — server-rendered directory (Bing/agent crawlers land here and get
+    // links to every card). Machine clients that send Accept: application/json
+    // with no text/html and no */* still get the legacy descriptor, so anything
+    // depending on that exact payload keeps working without a code change on
+    // their end. Everyone else gets HTML.
     if (url.pathname === '/' || url.pathname === '') {
-      return json({
-        service: 'Lead Stampede Agent Card Directory',
-        usage: 'GET /{client-slug} for JSON, /{client-slug}/view for the human page',
-        documentation: 'https://leadstampede.io',
-      });
+      const accept = (request.headers.get('Accept') || '').trim();
+      if (accept === 'application/json') {
+        return json(legacyRootDescriptor());
+      }
+      return handleDirectoryPage(env);
     }
+
+    // Explicit, stable path for the legacy descriptor — no Accept-sniffing
+    // required. Preferred over relying on the exact-match check above for
+    // any caller you can update.
+    if (url.pathname === '/service.json') {
+      return json(legacyRootDescriptor());
+    }
+
+    // Alias — /directory stops 404ing, same content as /.
+    if (url.pathname === '/directory') {
+      return handleDirectoryPage(env);
+    }
+
+    // Google Search Console verification file
 
     if (url.pathname === '/health') {
       return json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -226,6 +246,76 @@ LLMs: ${SITE_BASE}/llms.txt`,
     });
   },
 };
+
+// ---------------------------------------------------------------------
+// Root — legacy JSON descriptor, preserved for exact-match Accept and
+// the explicit /service.json path. Single source so the two call sites
+// can never drift from each other.
+// ---------------------------------------------------------------------
+function legacyRootDescriptor() {
+  return {
+    service: 'Lead Stampede Agent Card Directory',
+    usage: 'GET /{client-slug} for the card, /{client-slug}/.well-known/agent-card.json for the A2A card',
+    documentation: 'https://leadstampede.io',
+  };
+}
+
+// ---------------------------------------------------------------------
+// Root — server-rendered directory. Same Supabase filter as sitemap.xml
+// and llms.txt (active=true AND demo_only=false), so it stays correct
+// automatically as cards are added or deactivated. No hardcoded slug list.
+// ---------------------------------------------------------------------
+async function handleDirectoryPage(env) {
+  const res = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/clients?active=eq.true&demo_only=eq.false&select=slug,business_name,tagline,description&order=business_name.asc`,
+    {
+      headers: {
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!res.ok) {
+    return htmlResponse(
+      htmlShell('Lead Stampede — Agent Card Directory', '<p>Directory temporarily unavailable.</p>'),
+      502
+    );
+  }
+
+  const clients = await res.json();
+
+  const items = clients.map(c => {
+    const blurb = c.tagline || c.description || '';
+    return `  <li>
+    <a href="/${escapeAttr(c.slug)}">${escapeHtml(c.business_name || c.slug)}</a>
+    ${blurb ? `<p>${escapeHtml(blurb)}</p>` : ''}
+  </li>`;
+  }).join('\n');
+
+  const body = `
+  <div style="padding: 48px 0;">
+    <h1>Lead Stampede — Agent Card Directory</h1>
+    <p>Public, AI-agent-readable business profiles. Each card links to a full HTML profile
+    with schema.org structured data and an A2A agent card at
+    <code>/{slug}/.well-known/agent-card.json</code>.</p>
+    <ul style="list-style:none;padding:0;">
+${items}
+    </ul>
+  </div>`;
+
+  return htmlResponse(
+    htmlShell(
+      'Lead Stampede — Agent Card Directory',
+      body,
+      '',
+      { description: 'Public directory of Lead Stampede Agent Cards — AI-agent-readable business profiles with A2A endpoints.' }
+    ),
+    200,
+    { 'Cache-Control': 'public, max-age=3600' }
+  );
+}
 
 // ---------------------------------------------------------------------
 // Path parsing — identifies which route was requested
