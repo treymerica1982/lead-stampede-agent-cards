@@ -871,17 +871,25 @@ function buildSchemaJsonLd(client) {
       fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
     };
     const specs = [];
+    const HOURS_RANGE_RE = /^(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-–]\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
     for (const [key, label] of Object.entries(dayMap)) {
       const val = client.hours[key];
-      if (!val || /closed/i.test(val)) continue;
-      const match = val.match(/^(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-–]\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
-      if (match) {
-        specs.push({
-          '@type': 'OpeningHoursSpecification',
-          dayOfWeek: label,
-          opens: normalizeTime(match[1]),
-          closes: normalizeTime(match[2]),
-        });
+      if (!val || typeof val !== 'string' || /closed/i.test(val)) continue;
+      // A day may hold MULTIPLE ranges separated by a comma or semicolon --
+      // a split shift, e.g. "8:00am-12:00pm, 2:30pm-6:00pm". schema.org permits
+      // several OpeningHoursSpecification entries for the same dayOfWeek, so
+      // emit one per range. Previously only the first range was captured and
+      // the rest were silently dropped.
+      for (const part of val.split(/[,;]/)) {
+        const match = part.trim().match(HOURS_RANGE_RE);
+        if (match) {
+          specs.push({
+            '@type': 'OpeningHoursSpecification',
+            dayOfWeek: label,
+            opens: normalizeTime(match[1]),
+            closes: normalizeTime(match[2]),
+          });
+        }
       }
     }
     if (specs.length > 0) ld.openingHoursSpecification = specs;
