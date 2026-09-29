@@ -22,6 +22,15 @@ const CARD_VERSION = '1.3.0';
 const SITE_BASE = 'https://agentcards.leadstampede.io';
 const OLD_HOST = 'lead-stampede-cards.trey-1cb.workers.dev';
 
+// Phase 1 — hostname → slug map for root-domain card serving.
+// Requests to mapped hosts on /.well-known/agent-card.json serve the
+// same card as agentcards.leadstampede.io/{slug}/.well-known/agent-card.json.
+// All other paths pass through to the origin (e.g. Lovable).
+const ROOT_DOMAIN_CARDS = {
+  'proxytest.leadstampede.io': 'lead-stampede',
+  'leadstampede.io': 'lead-stampede',
+};
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -36,6 +45,38 @@ export default {
     // Exception: /.well-known/agent-card.json keeps serving on old host for A2A consumers
     if (url.hostname === OLD_HOST && !url.pathname.endsWith('/.well-known/agent-card.json')) {
       return Response.redirect(SITE_BASE + url.pathname + url.search, 301);
+    }
+
+    // Root-domain card serving — mapped hosts get the agent card at
+    // /.well-known/agent-card.json; every other path passes through
+    // to the origin (Lovable) untouched.
+    const mappedSlug = ROOT_DOMAIN_CARDS[url.hostname];
+    if (mappedSlug) {
+      if (url.pathname === '/.well-known/agent-card.json') {
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          return json({ error: 'method_not_allowed' }, 405);
+        }
+        const client = await fetchClient(mappedSlug, env);
+        if (!client) {
+          return json({ error: 'client_not_found', slug: mappedSlug }, 404);
+        }
+        const card = buildAgentCard(client, env);
+        ctx.waitUntil(
+          logCardView({
+            clientId: client.id,
+            requestingAgent: request.headers.get('User-Agent'),
+            sourceIp: request.headers.get('CF-Connecting-IP'),
+            responseMs: Date.now() - startedAt,
+            requestHost: url.hostname,
+            env,
+          })
+        );
+        return json(card, 200, {
+          'Cache-Control': 'public, max-age=300',
+        });
+      }
+      // Not the card path — pass through to origin (Lovable)
+      return fetch(request);
     }
 
     if (request.method !== 'GET') {
@@ -219,6 +260,7 @@ LLMs: ${SITE_BASE}/llms.txt`,
           requestingAgent: request.headers.get('User-Agent'),
           sourceIp: request.headers.get('CF-Connecting-IP'),
           responseMs: Date.now() - startedAt,
+          requestHost: url.hostname,
           env,
         })
       );
@@ -237,6 +279,7 @@ LLMs: ${SITE_BASE}/llms.txt`,
         requestingAgent: request.headers.get('User-Agent'),
         sourceIp: request.headers.get('CF-Connecting-IP'),
         responseMs: Date.now() - startedAt,
+        requestHost: url.hostname,
         env,
       })
     );
@@ -384,7 +427,7 @@ async function fetchFeaturedProducts(clientId, env) {
   return await res.json();
 }
 
-async function logCardView({ clientId, requestingAgent, sourceIp, responseMs, env }) {
+async function logCardView({ clientId, requestingAgent, sourceIp, responseMs, requestHost, env }) {
   try {
     await fetch(`${env.SUPABASE_URL}/rest/v1/agent_card_views`, {
       method: 'POST',
@@ -399,6 +442,7 @@ async function logCardView({ clientId, requestingAgent, sourceIp, responseMs, en
         requesting_agent: requestingAgent,
         source_ip: sourceIp,
         response_ms: responseMs,
+        request_host: requestHost,
       }),
     });
   } catch (err) {

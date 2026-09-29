@@ -1,6 +1,8 @@
 name = "lead-stampede-cards"
 main = "src/worker.js"
 compatibility_date = "2024-10-01"
+workers_dev = true
+preview_urls = true
 
 # Non-secret public config — checked into git
 [vars]
@@ -18,12 +20,18 @@ MCP_BASE_URL = "https://lead-stampede-mcp-server-production.up.railway.app"
 # so it can be rotated without redeploying code.
 
 # -------------------------------------------------------------------
-# Production environment — uncomment and customize once you have
-# a Railway URL for the MCP server and (optionally) a custom domain.
+# Routing
 # -------------------------------------------------------------------
-# [env.production]
-# vars = { MCP_BASE_URL = "https://mcp.leadstampede.io" }
-#
-# [[env.production.routes]]
-# pattern = "agentcards.leadstampede.io/*"
-# zone_name = "leadstampede.io"
+
+# agentcards.leadstampede.io — Custom Domain (auto-provisions SSL,
+# manages DNS). Declared here so the full config is version-controlled.
+[[routes]]
+pattern = "agentcards.leadstampede.io"
+custom_domain = true
+
+# Phase 1 rehearsal — serve the agent card on the proxy-test hostname.
+# Only /.well-known/agent-card.json hits the Worker; code passes
+# everything else through to the origin (Lovable) via fetch(request).
+[[routes]]
+pattern = "proxytest.leadstampede.io/.well-known/agent-card.json"
+zone_name = "leadstampede.io"
