@@ -35,3 +35,8 @@ custom_domain = true
 [[routes]]
 pattern = "proxytest.leadstampede.io/.well-known/agent-card.json"
 zone_name = "leadstampede.io"
+
+# Phase 2 cutover prep — serve the agent card on the root domain too.
+[[routes]]
+pattern = "leadstampede.io/.well-known/agent-card.json"
+zone_name = "leadstampede.io"
