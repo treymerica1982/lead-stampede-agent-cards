@@ -27,7 +27,6 @@ const OLD_HOST = 'lead-stampede-cards.trey-1cb.workers.dev';
 // same card as agentcards.leadstampede.io/{slug}/.well-known/agent-card.json.
 // All other paths pass through to the origin (e.g. Lovable).
 const ROOT_DOMAIN_CARDS = {
-  'proxytest.leadstampede.io': 'lead-stampede',
   'leadstampede.io': 'lead-stampede',
 };
 

@@ -29,14 +29,8 @@ MCP_BASE_URL = "https://lead-stampede-mcp-server-production.up.railway.app"
 pattern = "agentcards.leadstampede.io"
 custom_domain = true
 
-# Phase 1 rehearsal — serve the agent card on the proxy-test hostname.
-# Only /.well-known/agent-card.json hits the Worker; code passes
-# everything else through to the origin (Lovable) via fetch(request).
-[[routes]]
-pattern = "proxytest.leadstampede.io/.well-known/agent-card.json"
-zone_name = "leadstampede.io"
-
-# Phase 2 cutover prep — serve the agent card on the root domain too.
+# Root-domain agent card — the Worker serves /.well-known/agent-card.json;
+# all other paths pass through to the origin (Lovable) via fetch(request).
 [[routes]]
 pattern = "leadstampede.io/.well-known/agent-card.json"
 zone_name = "leadstampede.io"
